@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package somasafe.capture;
+
+option java_package = "app.somasafe.capture.proto";
+option java_multiple_files = true;
+
+// Schema for the `.ssds` subject-export the Android app imports for on-device
+// training tests. It mirrors how the capture store holds an ESP sample so an
+// imported window is indistinguishable from a streamed one.
+//
+// Every payload field is optional so the file can model real packet loss: a
+// window may carry signal data but no ML result (features/score absent), or an
+// ML result with no signal (data and device timestamps absent, exactly as a
+// result-only row looks in the app). A window with neither is never written,
+// leaving a hole in the sequence numbers just like a dropped capture.
+message CaptureWindow {
+  uint32 sequence_n = 1;
+  optional uint32 device_start_ms = 2; // present only alongside signal data
+  optional uint32 device_end_ms = 3;
+  bytes ppg = 4;       // float32 LE, 512 samples; empty if the signal was lost
+  bytes acc = 5;       // float32 LE, 256 samples
+  bytes features = 6;  // float32 LE, 17 values; empty if there is no ML result
+  bytes context = 7;   // float32 LE, 2 values; empty unless --include-context
+  bytes score = 8;     // int8 label; empty if there is no ML result
+}
+
+message CaptureDataset {
+  uint32 format_version = 1;
+  uint32 subject = 2;
+  repeated CaptureWindow windows = 3;
+}
