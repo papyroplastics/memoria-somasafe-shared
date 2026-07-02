@@ -29,4 +29,5 @@ message CaptureDataset {
   uint32 format_version = 1;
   uint32 subject = 2;
   repeated CaptureWindow windows = 3;
+  bytes static = 4;    // float32 LE, 6 demographics (raw, un-normalized); empty if absent
 }
