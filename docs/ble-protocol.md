@@ -19,6 +19,16 @@ mirrored as `Firmware.interface_version` in the backend schema) — see
   characteristic used for [device attestation](device-attestation.md): the client uploads
   a payload through the client buffer and the firmware ECDSA-signs it with the factory
   device key and notifies the DER signature back.
+- **OTA service** — firmware updates over BLE: a read-only version characteristic
+  (`u16 BLE_INTERFACE_VERSION`, little-endian, followed by the app version string), a state
+  characteristic (read/write/notify) driving the update, and write-only image and
+  signature characteristics accepting sequential writes. The client writes state `1` to
+  start (writing `1` again aborts and restarts the transfer, `0` aborts back to idle),
+  streams the raw app image and its DER ECDSA P-256/SHA-256 signature, then writes `2`
+  to finalize: the firmware verifies the image against the factory-provisioned
+  `srv_pub`, sets the boot partition, notifies `2` and restarts into the new firmware.
+  Any failure aborts the update and notifies `0xFF`. The phone is authoritative — the
+  device performs no version checks and there is no rollback.
 
 ## Reconstruction layer
 

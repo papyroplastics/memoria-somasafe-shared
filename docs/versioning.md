@@ -23,8 +23,26 @@ generation. A newer `weights_version` under the same `version` just means a newe
 snapshot is available to train from. See `application/README.md` ("Weights ride the
 trainable artifact") for the exact reset logic.
 
-## Not implemented
+## Firmware distribution
 
-`Firmware.interface_version` / `supported_contract_version` exist in the backend schema
-as a placeholder for a future OTA firmware-distribution path; there is no firmware upload
-or distribution endpoint yet.
+The OTA path is implemented on both ends. The firmware's BLE OTA service accepts
+server-signed images and reports `BLE_INTERFACE_VERSION` plus the running app version
+string (from `firmware/version.txt`) through its version characteristic (see
+[ble-protocol.md](ble-protocol.md)). The backend stores published builds as `Firmware`
+rows: `interface_version` is the BLE contract the build was compiled against, and
+`supported_contracts` is the **list** of `ML_CONTRACT_VERSION`s it can run — one image
+may support several model contract types. The device performs no version checks itself;
+the phone is authoritative.
+
+Publishing is a two-step flow: `firmware/scripts/export_image.py` (`make export-image`)
+copies the built image plus a metadata JSON (version string, interface version, contract
+list) into `shared/gen/firmware/{version}/`, and the backend seed script scans that
+directory, signs each image with the server key (plain ECDSA P-256/SHA-256 over the raw
+image bytes — the same signature `firmware/scripts/test_ota.py` produces) and inserts
+any version not yet in the database.
+
+Clients use `GET /ota/versions/{interface}` — the builds published for their own
+`BLE_INTERFACE_VERSION`, newest first, each carrying its `supported_contracts` — and
+`GET /ota/download/{interface}/{version}`, which returns the raw image with the server
+signature in the `X-Firmware-Signature` header, forwarded verbatim to the device's OTA
+service.
