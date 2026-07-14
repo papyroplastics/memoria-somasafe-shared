@@ -26,7 +26,7 @@ non-overlapping 8-second window (512 BVP samples @ 64 Hz + 256 ACC samples @ 32 
   ratio.
 
 This extraction is implemented identically in three places, so it must stay in sync:
-`backend/ml/data.py` (training/calibration), `firmware/main/ml/features.c` (on-device,
+`backend/ml/preprocessing.py` (training/calibration), `firmware/main/ml/features.c` (on-device,
 esp-dsp FFT), and `application/.../capture/domain/WindowFeatures.kt` (on-device recovery
 when a BLE result was lost, JDSP FFT). Features are stored **raw** everywhere; the model
 bakes in the z-score constants and normalizes them internally in `eval`/`train`.

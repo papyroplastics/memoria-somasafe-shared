@@ -7,8 +7,20 @@ user (`SEED_USER` / `SEED_PASSWORD`, default `somasafe` / `somasafe`); it is ide
 ## Sessions
 
 Sessions are stateful. Login returns an opaque `access_token` (30 min) + `refresh_token`
-(30 days); only their sha256 is stored server-side (`AuthSession` table), so a session can
-be revoked instantly. Passwords are argon2-hashed (`pwdlib`).
+(30 days); only their sha256 is stored server-side, so a session can be revoked instantly.
+The two live in different stores, split by how often each is checked: the `access_token`
+hash sits in Redis with a TTL matching its own lifetime (`api/lib/session.py`), since it's
+looked up on every authed request and a Postgres row (plus a write to bump a last-used
+timestamp) per request is pure overhead for a token that expires in minutes anyway; the
+`refresh_token` hash stays in Postgres (`AuthSession` table) since it's long-lived and only
+touched on login/refresh/logout. Passwords are argon2-hashed (`pwdlib`).
+
+Logging out (or rotating via refresh) revokes the `AuthSession` row and drops the Redis
+access-token key; `logout-all` additionally walks a per-user Redis index to drop every
+live access token for that user. One deliberate gap: rotating a refresh token does not
+retroactively kill the access token it was paired with — that access token simply expires
+on its own short TTL, same as it would if the client just kept using it instead of
+refreshing early.
 
 | Method | Path | Purpose |
 |--------|------|---------|

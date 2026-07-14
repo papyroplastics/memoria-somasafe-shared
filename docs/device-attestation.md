@@ -5,7 +5,9 @@ with its factory ECDSA P-256 key. A successful attestation makes the user that d
 registered owner, which is what unlocks the rate-limited model endpoints (downloads,
 uploads) for their account. It is a one-time ownership proof, not a per-upload signature:
 once a user is the registered owner, their federated updates are trusted like any other
-authenticated request — the device does not re-sign each weight upload.
+authenticated request — the device does not need to re-sign each weight upload, since
+the user is already verified as a device owner, at least until a diferent user verifies
+themselves with the same device (for example if the device changes hands).
 
 ## Factory identity
 
@@ -43,10 +45,3 @@ abandoned challenges never consume the window.
 
 `GET /device/owned` returns the serials the calling user currently owns.
 
-## What's not implemented
-
-Per-upload device signing (the device re-signing every weight-update hash so the server
-can verify each individual submission came from a live device session) was an earlier
-design idea and is not worth building — it adds complexity without a real security
-benefit over the one-time ownership proof, given there's no adversarial deployment. Not
-on the roadmap.
