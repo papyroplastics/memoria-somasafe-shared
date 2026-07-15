@@ -32,27 +32,29 @@ when a BLE result was lost, JDSP FFT). Features are stored **raw** everywhere; t
 bakes in the z-score constants and normalizes them internally in `eval`/`train`.
 
 Labels for training come from synthetic anomaly injection into the raw BVP signal (five
-kinds: spike, amplitude blow-up, band-limited noise, timewarp tachy/brady, afib-like
+kinds: amplitude blow-up, band-limited noise, tachycardia, bradycardia, afib-like
 jittered timewarp), window-aligned so every window is fully clean or fully anomalous.
 Being Dense-only, `FeatureMLP` is fully int8-quantizable and is the current ESP32-side
 inference model.
 
 ## Autoencoder family — `CNNAutoencoder` (focus) / `LSTMAutoencoder` / `GRUAutoencoder`
 
-Reconstruct the BVP channel of a `[BVP, ACC]` window (raw, model-normalized internally)
-and use reconstruction MSE as the anomaly score. The encoder sees `[BVP, ACC]` but the
-decoder reconstructs BVP only — ACC is exogenous context that explains motion artifacts
-without being part of the anomaly score. A small bottleneck plus latent dropout push the
-decoder to lean on the `cond` vector to generate the signal *expected for this person at
-this activity level*, rather than copying its input.
+Reconstruct a BVP window (raw, model-normalized internally) and use reconstruction MSE as
+the anomaly score. Encoder and decoder both see BVP only — ACC as a raw encoder channel
+measured as a no-op, so it reaches the model solely through the `cond` vector's activity
+context. What makes the error separate anomalies is how tightly the model fits the
+clean-BVP manifold: a sharper fit makes off-manifold input miss by relatively more, so
+detection improves with latent capacity rather than with a narrow bottleneck.
 
-The **CNN variant is the current focus**: non-recurrent strided convs + FiLM-conditioned
-upsampling, which quantizes cleanly for on-device training. LSTM/GRU variants are kept for
-comparison and as the teacher in a pseudo-labeling pipeline (`distill_labels.py`) that
-trains `FeatureMLP` on autoencoder-derived labels instead of synthetic ones.
+The **CNN variant is the current focus**: non-recurrent strided convs and upsampling,
+which quantize cleanly for on-device training. The `cond` vector enters once, joined to
+the code at the bottleneck, so the decoder reconstructs from `[z, cond]` jointly.
+LSTM/GRU variants are kept for comparison and as the teacher in a pseudo-labeling pipeline
+(`distill_labels.py`) that trains `FeatureMLP` on autoencoder-derived labels instead of
+synthetic ones.
 
-Detection also OR's in two cheap rhythm indices (in-band spectral entropy, beat-interval
-coefficient-of-variation) alongside reconstruction MSE, since reconstruction error alone is
-an integrity detector that's structurally weak on rhythm anomalies like afib.
+Reconstruction MSE is the whole detector. In-band spectral entropy is computed alongside
+it as a hand-crafted *baseline* that `distill_eval.py` reports for comparison; it is not
+part of the detector and never reaches the distilled labels.
 
 See `backend/README.md` for training commands, dataset pipeline and the current roadmap.
