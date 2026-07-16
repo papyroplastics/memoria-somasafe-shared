@@ -21,13 +21,11 @@ message CaptureWindow {
   bytes ppg = 4;       // float32 LE, 512 samples; empty if the signal was lost
   bytes acc = 5;       // float32 LE, 256 samples
   bytes features = 6;  // float32 LE, 17 values; empty if there is no ML result
-  bytes context = 7;   // float32 LE, 2 values; empty unless --include-context
-  bytes score = 8;     // int8 label; empty if there is no ML result
+  bytes score = 7;     // int8 label; empty if there is no ML result
 }
 
 message CaptureDataset {
   uint32 format_version = 1;
   uint32 subject = 2;
   repeated CaptureWindow windows = 3;
-  bytes static = 4;    // float32 LE, 6 demographics (raw, un-normalized); empty if absent
 }

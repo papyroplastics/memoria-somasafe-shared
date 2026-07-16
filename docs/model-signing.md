@@ -31,7 +31,7 @@ The device applies `norm_params` as `(x - mean) / std` before feeding the
 | version | model      | norm_params layout                                     |
 |---------|------------|--------------------------------------------------------|
 | 1       | FeatureMLP | `mean[17]`, `std[17]`                                  |
-| 2       | AE family  | signal `mean[2]`, `std[2]`; cond `mean[8]`, `std[8]`   |
+| 2       | AE family  | signal `mean[1]`, `std[1]`                             |
 
 ## Delivery
 
