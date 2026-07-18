@@ -39,12 +39,10 @@ else. ACC never reaches them — it exists in the pipeline solely as an input to
 
 The **CNN variant is the current focus**: non-recurrent strided convs and upsampling,
 which quantize cleanly for on-device training. LSTM/GRU variants are kept for comparison
-and as the teacher in a pseudo-labeling pipeline (`distill_labels.py`) that trains
-`FeatureMLP` on autoencoder-derived labels instead of synthetic ones.
+and as the teacher in a knowledge-distillation pipeline (`knowledge_distillation.py`) that
+trains `FeatureMLP` on autoencoder-derived soft labels instead of synthetic ones.
 
-Reconstruction MSE is the whole detector. In-band spectral entropy is computed alongside
-it as a hand-crafted *baseline* that `distill_eval.py` reports for comparison; it is not
-part of the detector and never reaches the distilled labels. See
+Reconstruction MSE is the whole detector. See
 [anomalies-and-distillation.md](anomalies-and-distillation.md) for how the score becomes a
 decision, how its threshold is calibrated, and how the labels are distilled.
 

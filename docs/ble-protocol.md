@@ -33,7 +33,7 @@ mirrored as `Firmware.interface_version` in the backend schema) — see
 ## Reconstruction layer
 
 Payloads larger than one MTU are reframed by a shared layer
-(`firmware/main/utils/notif_transaction.c`, mirrored by
+(`firmware/main/ble/notif_transaction.c`, mirrored by
 `application/.../bluetooth/domain/NotifTransaction.kt` as `TransactionReassembler`). Each
 logical payload (a "transaction") is fragmented across notifications, each carrying a
 3-byte header: flags (START/END), a per-transaction id, and a monotonic sequence number —
@@ -56,4 +56,7 @@ it (stands in for an on-device screen — the project never manufactures real ha
 there is no actual display); the user enters that passkey on the phone to complete
 pairing. Once bonded, a repeat pairing attempt from the same peer deletes the old bond and
 retries rather than failing. Sensitive characteristics are only accessible over an
-encrypted, authenticated link.
+encrypted, authenticated link, protecting agains passive sniffer, MITM attacks and 
+extenrnal attackers trying to connect directly to de device without direct acces to
+it phisically, does not protect agains an attacker who has the device on their hands.
+

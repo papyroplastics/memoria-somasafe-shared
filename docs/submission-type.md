@@ -38,7 +38,7 @@ the firmware. This matters for two reasons:
 
 - Not every model benefits from personalization — it is a per-model property. `quantize`
   exists so that a model which *does* benefit can ship its personalized weights to the
-  device. `FeatureMLP` (evaluated in `backend/scripts/distill_eval.py`, where the
+  device. `FeatureMLP` (evaluated in `backend/scripts/figures/knowledge_distillation.py`, where the
   personalized model scores marginally better than the global one) is only an **example**
   of such a model, not the justification for the feature; the justification is the
   flexibility itself.

@@ -253,12 +253,6 @@ which faults the detector actually catches. Since the clean FPR equals `f`, the 
 FPR also serves as the chance floor — a kind whose recall sits near `f` is not being
 detected at all, and a kind *below* `f` is being flagged less often than clean signal.
 
-**A hand-crafted baseline.** In-band spectral entropy — a classical DSP index, no learning
-involved — is computed on the same windows and thresholded exactly the same way, at the
-same expected FPR. It is *not* part of the detector and never reaches the distilled labels; it
-exists so the learned teacher can be read against a conventional alternative. Beating it
-is what justifies having learned a teacher at all.
-
 ### A structural blind spot
 
 Reconstruction error detects anomalies that make a waveform **harder** to reconstruct.
@@ -300,17 +294,16 @@ the client**, which is what makes the privacy premise viable.
 
 ### Soft labels
 
-The label is not a bare 0/1. Each window gets a **soft label in [0, 1]**: how far past its
-threshold the score ranks within the subject's own clean distribution. Concretely, the
-score's rank in the clean CDF is rescaled so that the threshold maps to 0 and the top of
-the clean distribution maps to 1. A window below threshold gets exactly 0, so
-`label > 0` reproduces the hard decision exactly, while windows well beyond the threshold
-are marked more confidently than windows that barely crossed it. That gradation is
-information the student can learn from and a hard label would throw away.
-
-The soft labels are then smoothed with a small **temporal median filter** over neighbouring
-windows, which suppresses isolated single-window flickers — real events span many windows
-(§2), so an isolated flag is more likely noise than signal.
+The label is not a bare 0/1. Each window gets a **soft label in [0, 1]**:
+`sigmoid((error − threshold) / s)`, where `s` is the standard deviation of that subject's
+own clean-window scores. The signed distance to the threshold says which side of the
+decision the window falls on and how far; dividing by `s` puts that distance on the
+subject's own error scale — reconstruction-error magnitude varies between people (§4), so
+without it the same logit would mean different things for different subjects. The sigmoid
+then ramps smoothly: a window right at the threshold gets `0.5`, so `label > 0.5`
+reproduces the hard decision, while windows well beyond it saturate toward 1 and windows
+well below toward 0. That gradation is information the student can learn from and a hard
+label would throw away.
 
 The result is a label set shaped exactly like the real feature dataset, so the student's
 training run consumes it by pointing at a different directory and changing nothing else.
@@ -333,15 +326,15 @@ clean BVP ──> autoencoder (teacher)          trained on clean signal only, n
     │   expected FPR f ── calibration        1-D sweep, maximize J = recall(f) - f
     │                                        (server-side; J is prevalence-independent, F1 is not)
     │
-    ├──> evaluation                          per-kind recall, empirical clean FPR, vs. spectral
-    │                                        baseline; uses ground truth — diagnostic only
+    ├──> evaluation                          per-kind recall, empirical clean FPR;
+    │                                        uses ground truth — diagnostic only
     │
-    └──> soft labels ──> FeatureMLP (student) clean-CDF rank past threshold, median
-                                              smoothed; client-side data only
+    └──> soft labels ──> FeatureMLP (student) sigmoid((error-threshold)/clean-error std);
+                                              client-side data only
 ```
 
-Implementation lives in `backend/scripts/distillation/` (`distill_calibrate`,
-`distill_eval`, `distill_labels`) over the shared scoring helpers in
+Implementation lives in `backend/scripts/figures/` (`calibrate_fpr`, `anomaly_detection`,
+`knowledge_distillation`) over the shared scoring helpers in
 `backend/scripts/common/scoring.py`; synthetic-anomaly generation is in
 `backend/ml/preprocessing.py`. See [model-types.md](model-types.md) for the model
 architectures and `backend/PLOTS.md` for the commands that produce each result.
