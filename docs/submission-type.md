@@ -38,10 +38,10 @@ the firmware. This matters for two reasons:
 
 - Not every model benefits from personalization — it is a per-model property. `quantize`
   exists so that a model which *does* benefit can ship its personalized weights to the
-  device. `FeatureMLP` (evaluated in `backend/scripts/figures/knowledge_distillation.py`, where the
-  personalized model scores marginally better than the global one) is only an **example**
-  of such a model, not the justification for the feature; the justification is the
-  flexibility itself.
+  device. `FeatureMLP` (evaluated in `backend/scripts/figures/knowledge_distillation.py`, where
+  personalization moves the pooled F1 by roughly nothing on average but swings individual
+  subjects by ±0.2–0.3) is only an **example** of such a model, not the justification for
+  the feature; the justification is the flexibility itself.
 - Federated aggregation can make a model *worse* on a given user's local data (the global
   average pulls it away from that user's distribution). The `quantize` path lets a user
   obtain a version of the model quantized from the weights **before** aggregation — i.e.

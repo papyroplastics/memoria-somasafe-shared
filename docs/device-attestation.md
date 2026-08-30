@@ -21,7 +21,7 @@ partition never touches the provisioned identity):
 - `srv_pub` — the server's ECDSA P-256 public key, used to verify signed models (see
   [model-signing.md](model-signing.md)).
 
-The server's own keypair is generated separately with `shared/make_keys.sh`; its public
+The server's own keypair is generated separately by `shared/Makefile` (`make setup`); its public
 half is what gets baked into `srv_pub` at provisioning time, and its private half is what
 the backend signs models with (`common/config.py`). The device row (`serial` +
 `public_key`) is registered server-side ownerless from the same factory NVS image

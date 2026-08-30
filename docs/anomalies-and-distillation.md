@@ -59,13 +59,19 @@ Everything starts from PPG-DaLiA: 15 subjects (S1–S15), wrist BVP at 64 Hz and
 accelerometer at 32 Hz. The signal is cut into non-overlapping **8-second windows** (512
 BVP samples), which is the unit of every label, score and decision in this document.
 
-From each subject's clean recording, three datasets are derived:
+From each subject's clean recording, three variants are derived:
 
-| Dataset | What it is | Used for |
+| Variant | What it is | Used for |
 |---|---|---|
-| **clean-signals** | The original recording, untouched | Training the teacher; each subject's own reference for thresholding |
-| **anomalous-signals** | One dataset *per anomaly kind*, that kind applied to every window | Per-kind evaluation in isolation |
-| **mixed-signals** | A realistic blend: ~50% of windows corrupted, kinds drawn at random | Calibration, evaluation, distillation, student training |
+| **clean** | The original recording, untouched | Training the teacher; each subject's own reference for thresholding and for normalization |
+| **anomalous** | One signal *per anomaly kind*, that kind applied to every window | Per-kind evaluation in isolation |
+| **mixed** | A realistic blend: ~50% of windows corrupted, kinds drawn at random | Calibration, evaluation, distillation, student training |
+
+The first two are on disk; the mix is built at load time from the first, seeded by subject
+id so it is identical in every script that asks for it. The mix is what every aggregate
+detector metric is measured against, which means a kind the detector scores *backwards*
+disappears into the average — `scripts/figures/anomaly_kinds.py` is where each kind is
+weighed on its own.
 
 Anomalies are injected into **BVP only** — the accelerometer channel is never corrupted.
 ACC exists in the pipeline for one purpose: it feeds the hand-crafted feature vector the
@@ -86,6 +92,38 @@ Corruptions are applied over **whole-window-aligned spans** of 8–30 consecutiv
 never partially overlapping a window. That alignment is what lets a single binary label
 describe a window: every window is entirely clean or entirely anomalous, and the labels
 line up 1:1 with the feature grid and the score grid.
+
+### The activity dimension
+
+PPG-DaLiA is not a rest recording. Each subject is taken through eight protocol activities
+— sitting, stairs, table soccer, cycling, driving, lunch, walking, working — plus transient
+periods between them, and the dataset ships an activity id per sample alongside the signal.
+That matters here because PPG is an optical measurement at the wrist: during cycling,
+stairs or walking, motion artefacts dominate the waveform. An autoencoder trained across
+all of it spends its capacity modelling motion, and reconstruction error stops separating
+"unusual heartbeat" from "the subject moved".
+
+So the activity track becomes a second axis on the three datasets above, orthogonal to the
+anomaly injection. Two views exist:
+
+| View | Windows kept |
+|---|---|
+| **all activities** | every window |
+| **low activity** | only windows spent sitting, driving, at lunch, or working |
+
+The filter is **strict**: a window is kept only if *every* sample in it carries an allowed
+activity, so windows straddling an activity change — and the transient periods, which are
+mostly walking — are dropped. It is applied when the data is read, never on disk, and
+identically to clean, mixed, per-kind and feature windows, so a window index still means
+the same eight seconds everywhere and the labels still line up 1:1.
+
+Training and its evaluation use the low-activity view. Two things deliberately do not: the
+z-score constants baked into each model, and the sample the int8 converter calibrates its
+tensor scales on. Both describe the range the device will actually see, and the device is
+worn during cycling too — filtering them would make the deployed model clip exactly the
+inputs it was never calibrated for. Detector evaluation can be run either way (the analysis
+scripts take a `--dataset` flag), which is how the cost of the filter is measured rather
+than assumed.
 
 ### A caveat that matters later
 
@@ -336,5 +374,6 @@ clean BVP ──> autoencoder (teacher)          trained on clean signal only, n
 Implementation lives in `backend/scripts/figures/` (`calibrate_fpr`, `anomaly_detection`,
 `knowledge_distillation`) over the shared scoring helpers in
 `backend/scripts/common/scoring.py`; synthetic-anomaly generation is in
-`backend/ml/preprocessing.py`. See [model-types.md](model-types.md) for the model
-architectures and `backend/PLOTS.md` for the commands that produce each result.
+`backend/ml/preprocessing.py`, and the activity filter plus the dataset registry in
+`backend/ml/sources/dalia.py` and `backend/ml/dataset_list.py`. See [model-types.md](model-types.md) for the model
+architectures and `backend/RESULTS.md` for the commands that produce each result.
