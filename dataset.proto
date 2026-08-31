@@ -19,6 +19,4 @@ message CaptureDataset {
   uint32 format_version = 1;
   uint32 subject = 2;
   repeated CaptureWindow windows = 3;
-  bytes norm_mean = 4;
-  bytes norm_std = 5;
 }

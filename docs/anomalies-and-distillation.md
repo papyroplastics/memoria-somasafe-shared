@@ -376,4 +376,5 @@ Implementation lives in `backend/scripts/figures/` (`calibrate_fpr`, `anomaly_de
 `backend/scripts/common/scoring.py`; synthetic-anomaly generation is in
 `backend/ml/preprocessing.py`, and the activity filter plus the dataset registry in
 `backend/ml/sources/dalia.py` and `backend/ml/dataset_list.py`. See [model-types.md](model-types.md) for the model
-architectures and `backend/RESULTS.md` for the commands that produce each result.
+architectures and the report's `planificacion/plan-validacion.md` for the commands that
+produce each result.

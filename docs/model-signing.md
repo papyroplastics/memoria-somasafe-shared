@@ -57,12 +57,16 @@ into the payload staged onto the device over the ML client-buffer service
 | `contract_version` | `u16`         | yes    |
 | `tflite`           | `u8[]`        | yes    |
 
-The client-supplied normalization block sits **ahead of** the signed fields on purpose: it
-leaves `contract_version ‖ tflite` contiguous at the end of the buffer, so the device
-verifies the signature in place over `data + 4 + sig_len + norm_len` without reassembling
-or copying the payload anywhere. `norm_params` is `mean[n]` followed by `std[n]`, and
-`norm_len` must match the length the device's contract fixes (136 bytes for contract 1) —
-a mismatch is rejected before the signature is even checked.
+The app derives that block from its own capture store — the per-feature mean/std of a
+capture group's raw feature vectors, picked on the Captures tab (see
+`application/README.md`); the firmware harness (`scripts/lib/capture.py`) does the same
+over a subject export's vectors. The client-supplied normalization block sits **ahead of**
+the signed fields on purpose: it leaves `contract_version ‖ tflite` contiguous at the end
+of the buffer, so the device verifies the signature in place over
+`data + 4 + sig_len + norm_len` without reassembling or copying the payload anywhere.
+`norm_params` is `mean[n]` followed by `std[n]`, and `norm_len` must match the length the
+device's contract fixes (136 bytes for contract 1) — a mismatch is rejected before the
+signature is even checked.
 
 Assembler: `application/.../bluetooth/domain/ModelPayload.kt`.
 Verifier: `firmware/main/ml/infer.cc` (`parse_payload`), against

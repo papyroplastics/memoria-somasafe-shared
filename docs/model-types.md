@@ -15,12 +15,18 @@ signed payload — see [model-signing.md](model-signing.md).
 
 ## `FeatureMLP` — supervised anomaly classifier (current on-device candidate)
 
-A Dense-only network over a 17-value hand-crafted feature vector, computed from each
+A Dense-only network over a 20-value hand-crafted feature vector, computed from each
 non-overlapping 8-second window (512 BVP samples @ 64 Hz + 256 ACC samples @ 32 Hz):
 
 - Per-channel (BVP and ACC): mean, std, min, max, range, RMS, mean-abs-diff.
 - BVP-only (spectral): zero-crossing rate, dominant frequency, HR-band (0.7–3.5 Hz) energy
   ratio.
+- BVP-only (pulse-band shape, 0.5–4.0 Hz = 30–240 bpm): spectral centroid, spectral
+  spread, and the log power ratio above the band. The band is deliberately wider than the
+  HR-band ratio's so a slowed rhythm still falls inside it. These three say *where* the
+  in-band energy sits rather than how much of it there is, which is what separates a
+  slowed or accelerated rhythm from a normal one; they are read off the same FFT the two
+  features above already need.
 
 This extraction is implemented identically in three places, so it must stay in sync:
 `backend/ml/preprocessing.py` (training/calibration), `firmware/main/ml/features.c` (on-device,
@@ -36,7 +42,7 @@ mixed by the loader rather than stored.
 Being Dense-only, `FeatureMLP` is fully int8-quantizable and is the current ESP32-side
 inference model.
 
-## Autoencoder family — `SpectralAutoencoder` (focus) / `CNNAutoencoder` / `LSTMAutoencoder` / `GRUAutoencoder`
+## Autoencoder family — `FeatureAutoencoder` / `CNNAutoencoder` / `LSTMAutoencoder` / `GRUAutoencoder`
 
 Reconstruct a BVP window (raw, model-normalized internally) and use reconstruction MSE as
 the anomaly score. The signal is the only input: the autoencoders take BVP and nothing
@@ -49,16 +55,15 @@ kept for comparison and as the teacher in a knowledge-distillation pipeline
 (`knowledge_distillation.py`) that trains `FeatureMLP` on autoencoder-derived soft labels
 instead of synthetic ones.
 
-### `SpectralAutoencoder` — descriptor reconstruction (detector focus)
+### `FeatureAutoencoder` — feature reconstruction (detector focus)
 
 Same contract — trained on normal windows only, scored by reconstruction error — but what
-it reconstructs is a fixed 14-value descriptor of the window rather than the waveform: log
-amplitude, pulse-band dominant frequency / centroid / spread / entropy / peak share, the
-out-of-band power ratios, mean-abs-diff over std, autocorrelation peak and its lag,
-skewness and kurtosis (`backend/ml/spectral.py`). The transform is not trainable, so like
-the 17-value feature vector it is computed off-model — by the loader offline, by the device
-on-line — and the model's input *is* the descriptor. The trainable part is four dense
-layers over 14 numbers, the smallest model in the project.
+it reconstructs is the same 20-value feature vector `FeatureMLP` classifies, rather than
+the waveform. It is the merge of the project's two other models: `FeatureMLP`'s input,
+`CNNAutoencoder`'s unsupervised objective. Since the vector is already computed off-model
+everywhere — by the loader offline, by the device on-line — the model needs nothing the
+system does not already produce. The trainable part is four dense layers over 20 numbers,
+the smallest model in the project.
 
 The reason is that a waveform autoencoder's reconstruction error measures signal
 *complexity*, not novelty: it is essentially the high-frequency residual the bottleneck
@@ -66,11 +71,17 @@ could not carry, so an anomaly that smooths or slows the signal is reconstructed
 than a normal window and lands below the threshold instead of above it. Bradycardia is the
 clearest case — a waveform autoencoder ranks it at AUC 0.34 on held-out subjects, i.e.
 actively inverted, which pins the detector's ROC near the diagonal no matter how well the
-model is trained. Every descriptor coordinate has a bounded normal range, so a departure
+model is trained. Every feature has a bounded normal range, so a departure
 in either direction leaves the region the bottleneck learned, and the same score detects
 both a rhythm that is too slow and one that is too fast. `anomaly_kinds.py` measures that
 per kind for any model: bradycardia goes from AUC 0.35 under `CNNAutoencoder` — inverted —
-to 0.98 here.
+to 0.97 here.
+
+The three pulse-band shape features exist for this model. Measured on the same held-out
+subjects, the autoencoder over the original 17 reaches ROC-AUC 0.66 and leaves bradycardia
+at 0.75; adding centroid, spread and the high-band ratio takes it to 0.74 and 0.97, level
+with a purpose-built 14-value spectral descriptor that was tried first and dropped in
+favour of reusing one vector across both models.
 
 Reconstruction MSE is the whole detector either way. See
 [anomalies-and-distillation.md](anomalies-and-distillation.md) for how the score becomes a
