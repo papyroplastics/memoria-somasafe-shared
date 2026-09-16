@@ -15,14 +15,13 @@ signed payload — see [model-signing.md](model-signing.md).
 
 ## `FeatureMLP` — supervised anomaly classifier (current on-device candidate)
 
-A Dense-only network over a 20-value hand-crafted feature vector, computed from each
-non-overlapping 8-second window (512 BVP samples @ 64 Hz + 256 ACC samples @ 32 Hz):
+A Dense-only network over a 13-value hand-crafted feature vector, computed from each
+non-overlapping 8-second window (512 BVP samples @ 64 Hz):
 
-- Per-channel (BVP and ACC): mean, std, min, max, range, RMS, mean-abs-diff.
-- BVP-only (spectral): zero-crossing rate, dominant frequency, HR-band (0.7–3.5 Hz) energy
-  ratio.
-- BVP-only (pulse-band shape, 0.5–4.0 Hz = 30–240 bpm): spectral centroid, spectral
-  spread, and the log power ratio above the band. The band is deliberately wider than the
+- Time-domain: mean, std, min, max, range, RMS, mean-abs-diff.
+- Spectral: zero-crossing rate, dominant frequency, HR-band (0.7–3.5 Hz) energy ratio.
+- Pulse-band shape (0.5–4.0 Hz = 30–240 bpm): spectral centroid, spectral spread, and the
+  log power ratio above the band. The band is deliberately wider than the
   HR-band ratio's so a slowed rhythm still falls inside it. These three say *where* the
   in-band energy sits rather than how much of it there is, which is what separates a
   slowed or accelerated rhythm from a normal one; they are read off the same FFT the two
@@ -46,8 +45,7 @@ inference model.
 
 Reconstruct a BVP window (raw, model-normalized internally) and use reconstruction MSE as
 the anomaly score. The signal is the only input: the autoencoders take BVP and nothing
-else. ACC never reaches them — it exists in the pipeline solely as an input to
-`FeatureMLP`'s hand-crafted features.
+else.
 
 Among the three waveform variants the **CNN** one is the reference: non-recurrent strided
 convs and upsampling, which quantize cleanly for on-device training. LSTM/GRU variants are
@@ -58,11 +56,11 @@ instead of synthetic ones.
 ### `FeatureAutoencoder` — feature reconstruction (detector focus)
 
 Same contract — trained on normal windows only, scored by reconstruction error — but what
-it reconstructs is the same 20-value feature vector `FeatureMLP` classifies, rather than
+it reconstructs is the same 13-value feature vector `FeatureMLP` classifies, rather than
 the waveform. It is the merge of the project's two other models: `FeatureMLP`'s input,
 `CNNAutoencoder`'s unsupervised objective. Since the vector is already computed off-model
 everywhere — by the loader offline, by the device on-line — the model needs nothing the
-system does not already produce. The trainable part is four dense layers over 20 numbers,
+system does not already produce. The trainable part is four dense layers over 13 numbers,
 the smallest model in the project.
 
 The reason is that a waveform autoencoder's reconstruction error measures signal

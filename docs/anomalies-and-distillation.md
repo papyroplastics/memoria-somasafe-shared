@@ -55,9 +55,9 @@ and for picking one global constant; they are never needed on a real client.
 
 ## 2. The three datasets
 
-Everything starts from PPG-DaLiA: 15 subjects (S1–S15), wrist BVP at 64 Hz and
-accelerometer at 32 Hz. The signal is cut into non-overlapping **8-second windows** (512
-BVP samples), which is the unit of every label, score and decision in this document.
+Everything starts from PPG-DaLiA: 15 subjects (S1–S15), wrist BVP at 64 Hz. The signal is
+cut into non-overlapping **8-second windows** (512 BVP samples), which is the unit of
+every label, score and decision in this document.
 
 From each subject's clean recording, three variants are derived:
 
@@ -73,9 +73,7 @@ detector metric is measured against, which means a kind the detector scores *bac
 disappears into the average — `scripts/figures/anomaly_kinds.py` is where each kind is
 weighed on its own.
 
-Anomalies are injected into **BVP only** — the accelerometer channel is never corrupted.
-ACC exists in the pipeline for one purpose: it feeds the hand-crafted feature vector the
-classifier consumes. No model takes ACC as a signal input.
+Anomalies are injected into BVP, the only signal in the pipeline.
 
 ### The five anomaly kinds
 

@@ -7,8 +7,8 @@ mirrored as `Firmware.interface_version` in the backend schema) — see
 
 ## Services
 
-- **PPG service** — notify-only characteristic streaming raw BVP (64 Hz) + ACC (32 Hz)
-  samples every second, fragmented to the negotiated MTU.
+- **PPG service** — notify-only characteristic streaming raw BVP (64 Hz) samples every
+  second, fragmented to the negotiated MTU.
 - **Model-transfer / client buffer** — a generic client-writable buffer (size, write
   position, READY/NOT_READY state characteristic) used both to upload a model payload and
   to upload an arbitrary payload to the device-signing service. A consumer task that

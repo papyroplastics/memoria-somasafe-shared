@@ -9,10 +9,9 @@ message CaptureWindow {
   uint32 sequence_n = 1;
   optional uint32 device_start_ms = 2; // present only alongside signal data
   optional uint32 device_end_ms = 3;
-  bytes ppg = 4;       // float32 LE, 512 samples; empty if the signal was lost
-  bytes acc = 5;       // float32 LE, 256 samples
-  bytes features = 6;  // float32 LE, 17 values; empty if there is no ML result
-  bytes score = 7;     // int8 label; empty if there is no ML result
+  bytes ppg = 4;       // float32 LE, 512 samples or empty if signal is not included for the sample.
+  bytes features = 5;  // float32 LE, 13 values, empty if there is no ML result
+  bytes score = 6;     // int8 label; empty if there is no ML result
 }
 
 message CaptureDataset {

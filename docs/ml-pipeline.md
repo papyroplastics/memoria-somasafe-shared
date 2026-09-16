@@ -66,9 +66,9 @@ whole clean recording either way.
 ## What is on disk, and what is not
 
 Only two stages are written out, both by `scripts/system/get_dataset.py`: `clean-signals/S*/`
-(raw BVP, ACC magnitude, activity track) and `anomalous-signals/<kind>/S*/` (one
+(raw BVP, activity track) and `anomalous-signals/<kind>/S*/` (one
 fully-anomalous copy per kind). Everything else — the anomaly mix and its labels, the
-20-value feature vectors, every normalization parameter — is derived on the call from
+13-value feature vectors, every normalization parameter — is derived on the call from
 those two, since it's milliseconds of numpy per subject and caching it meant rebuilding
 the dataset whenever a definition moved.
 `scripts/system/export_subject_data.py` materializes a snapshot of one subject (the

@@ -83,7 +83,7 @@ Driven from the connected-device screen: **Load** a model (stages the signed pay
 the wearer's normalization parameters onto the device), **Start capture** opens a session
 and subscribes to the PPG/ML services (each window and each inference result merged by
 sequence number, since either can arrive first or be lost), **Stop capture** closes it.
-Each sample stores raw PPG/ACC, on-device timestamps, receive time, and (when present) the
+Each sample stores raw PPG, on-device timestamps, receive time, and (when present) the
 raw features and int8 score. Stored in Room at `capture.db`.
 
 ## On-device preprocessing (Process)
@@ -91,7 +91,7 @@ raw features and int8 score. Stored in Room at `capture.db`.
 One idempotent pass over a capture group's stored windows (`CapturePipeline.kt`):
 
 - **Features** — any complete window missing an ML result (dropped packet) gets its
-  17-feature vector recomputed on the phone, matching the firmware's extractor, and stored
+  13-feature vector recomputed on the phone, matching the firmware's extractor, and stored
   without a score (running the model just to fill the score would waste computation).
 - **Normalization parameters** — the same pass derives the wearer's z-score parameters
   from that group's own windows: per-feature mean/std over the feature vectors, plus one
@@ -118,7 +118,7 @@ Reached from a model's detail screen. One local epoch (`Trainer.kt`):
 1. Loads the trainable model (baked-in weights are the global snapshot), restoring a
    previous epoch's `trained_weights.bin` on top if present.
 2. Assembles windows from a capture group and z-scores each with that group's own signal
-   parameters — the normalized window is the whole model input; label/ACC are unused (the
+   parameters — the normalized window is the whole model input; the label is unused (the
    autoencoder is self-supervised).
 3. Writes `trained_weights.bin` and the starting snapshot to `base_weights.bin`, which
    marks the quantized artifact outdated. The upload actions then submit `trained − base`

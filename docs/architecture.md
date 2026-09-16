@@ -5,7 +5,7 @@ SomaSafe is a federated learning system for cardiovascular anomaly detection on 
 data never leaves the user's devices. Three tiers, with the ESP32 fully isolated behind
 the phone:
 
-- **ESP32 (`firmware/`)** acquires PPG/ACC data, streams it to the paired phone over BLE,
+- **ESP32 (`firmware/`)** acquires PPG data, streams it to the paired phone over BLE,
   and runs inference on the current int8 `.tflite` model with TensorFlow Lite Micro
   (Espressif's `esp-tflite-micro` fork). It has no internet connection — the Android
   device is its only external interface.
