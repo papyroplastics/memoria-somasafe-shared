@@ -10,10 +10,11 @@ Sessions are stateful. Login returns an opaque `access_token` (30 min) + `refres
 (30 days); only their sha256 is stored server-side, so a session can be revoked instantly.
 The two live in different stores, split by how often each is checked: the `access_token`
 hash sits in Redis with a TTL matching its own lifetime (`api/lib/session.py`), since it's
-looked up on every authed request and a Postgres row (plus a write to bump a last-used
-timestamp) per request is pure overhead for a token that expires in minutes anyway; the
-`refresh_token` hash stays in Postgres (`AuthSession` table) since it's long-lived and only
-touched on login/refresh/logout. Passwords are argon2-hashed (`pwdlib`).
+looked up on every authed request and a Postgres row per request is pure overhead for a
+token that expires in minutes anyway — the Redis payload already carries the user id, so
+validating a request never touches Postgres at all; the `refresh_token` hash stays in
+Postgres (`AuthSession` table) since it's long-lived and only touched on login/refresh/logout.
+Passwords are argon2-hashed (`pwdlib`).
 
 Logging out (or rotating via refresh) revokes the `AuthSession` row and drops the Redis
 access-token key; `logout-all` additionally walks a per-user Redis index to drop every
@@ -28,7 +29,6 @@ refreshing early.
 | POST | `/auth/refresh` | `{refresh_token}` → rotated token pair |
 | POST | `/auth/logout` | revoke the current session |
 | POST | `/auth/logout-all` | revoke every session for the user |
-| GET | `/auth/me` | current user |
 
 Requests authenticate with `Authorization: Bearer <access_token>`. An expired access
 token (`401`) is refreshed via `/auth/refresh` without re-entering the password.

@@ -16,10 +16,12 @@ distributable instead of assuming a co-located disk.
   `GlobalWeights` row), accepts weight-delta uploads, persists them, enqueues worker jobs,
   and exposes a result endpoint the client polls.
 - **Worker (`worker/tasks.py`):** restores uploaded weights into the model, converts it to
-  a signed int8 `.tflite`, validates submit-only uploads, and runs the daily federated
-  aggregation. Each forked worker child builds every available model post-fork (TensorFlow
-  isn't fork-safe once initialized, so building it in the parent would deadlock every
-  child).
+  a signed int8 `.tflite`, and runs the daily federated aggregation. Each forked worker
+  child builds every available model post-fork (TensorFlow isn't fork-safe once
+  initialized, so building it in the parent would deadlock every child). Beat (the
+  scheduler that fires the aggregation/cleanup ticks) runs as its own single-replica
+  process (`make beat-run`), never embedded in a worker — running it inside a scaled-out
+  worker would fire every tick once per worker replica.
 
 ## Storage decisions (thesis scope, no production deployment)
 
@@ -31,8 +33,11 @@ distributable instead of assuming a co-located disk.
   second source of truth (upload between `flush()`/`commit()`, orphaned objects on a failed
   commit, a `stat` call needed on every download route). Blobs stay within what Postgres
   handles comfortably at this scale (a few MB to ~13 MB per artifact).
-- **Redis** is the Celery broker and also backs the result cache (so a caller can await a
-  queued task's return value) and rate limiting.
+- **Redis** backs the Celery broker/result cache (so a caller can await a queued task's
+  return value) and, separately, session/rate-limit state. Both default to the same
+  `REDIS_URL` instance for local single-instance setups, but the broker side can be pointed
+  at a different instance via `CELERY_BROKER_URL`/`CELERY_RESULT_BACKEND` — the two have
+  different access patterns and don't need to share an instance.
 - **Everything served is zstd-compressed**, stored compressed and served as-is (the client
   decompresses). Signatures cover the raw bytes, so the server compresses after signing.
 - **The gateway always proxies** — it reads the blob server-side and returns it, so auth
@@ -54,8 +59,9 @@ A beat task runs one round per initialized model, on `FED_AGG_INTERVAL_SECONDS` 
    [submission-type.md](submission-type.md)); a type with no strategy is skipped.
 2. **Window** — the deltas whose `base_weights_id` is the version's active snapshot, one
    per client (latest submission wins).
-3. **Validation** — a structural check (weight count matches, buffer finite), normally
-   already cached by the quantize/validate tasks as submissions arrive.
+3. **Validation** — a structural check (weight count matches, buffer finite) the gateway
+   already performs before accepting a submission, so every stored row is pre-validated;
+   aggregation only re-checks rows written before that guarantee existed.
 4. **Round threshold** — fewer than `FED_MIN_SUBMISSIONS` (default 1) valid submissions
    skips the model until next round.
 5. **Aggregation** — `trimmed_mean` drops the smallest/largest `FED_TRIM_RATIO` (default
@@ -98,13 +104,11 @@ spent only after the work happens, so a rejected request never counts against qu
 | Endpoint | Limit |
 |----------|-------|
 | `GET /model/list`, `GET /model/versions/{key}` | authed only |
-| `GET /model/download/{trainable,quantized}/{key}` | device-owner; one per model per `DOWNLOAD_COOLDOWN_SECONDS` (default 300 s) |
+| `GET /model/download/{trainable,quantized}/{key}` | device-owner; one per (model, artifact) per `DOWNLOAD_COOLDOWN_SECONDS` (default 300 s) — trainable and quantized cool down independently |
 | `GET /model/weights/{key}` | device-owner; same cooldown, separate counter from the artifact download |
-| `POST /model/submit/quantize/{key}/{weights_id}` | device-owner; `QUANTIZE_DAILY_LIMIT` (default 2) per model per rolling 24 h |
-| `POST /model/submit/raw/{key}/{weights_id}` | device-owner; `SUBMIT_DAILY_LIMIT` (default 2) per model per rolling 24 h |
+| `POST /model/submit/quantize\|raw/{key}/{weights_id}`, `POST /model/secure/submit/{round_id}` | device-owner; `SUBMIT_DAILY_LIMIT` (default 2) per model per rolling 24 h, shared across all three submission paths — one weight-submission budget per model regardless of which endpoint delivers it |
 | `GET /model/quantize/result/{job_id}` | authed; only the submitting user |
-| `POST /model/secure/join/{key}` | device-owner; `404` unless the model is `secure`-typed |
-| `POST /model/secure/submit/{round_id}` | device-owner + round member; one vector per member |
+| `POST /model/secure/join/{key}` | device-owner; `404` unless the model is `secure`-typed; one join per model per `SECURE_JOIN_COOLDOWN_SECONDS` (default 300 s) |
 | `GET /ota/download/{interface}/{version}` | device-owner; one per interface per `OTA_DOWNLOAD_COOLDOWN_SECONDS` (default 300 s) |
 
 Accounts are seeded, not self-registered: `uv run -m scripts.system.seed_db` bootstraps a
