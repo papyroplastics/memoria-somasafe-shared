@@ -50,7 +50,7 @@ S = floor(2^31 / (n * B))    fixed-point scale
 R = 2^32
 ```
 
-The roster must be **identical for every client and fixed before anyone masks**. That is the only synchronisation this protocol needs, and it's the sole reason a round is a first-class object rather than an implicit window. The server distributes the descriptor to every client in `C`.
+The roster must be **identical for every client and fixed before anyone masks**. That is the only synchronisation this protocol needs, and it's the sole reason a round is a first-class object (`SecureRound`) rather than an implicit window. The first join for a model opens a round pinned to the active weights and later joins add members; a worker sweep then **seals** it — freezing the roster and fixing `n` and `S` — once `SECURE_TARGET_MEMBERS` have joined, or once it has been open `SECURE_ROUND_OPEN_TIMEOUT_SECONDS` with at least `SECURE_MIN_MEMBERS` (below that it fails). A join holds a lock on the open round until it commits, so no member can slip in after the seal. Sealed, the round serves its descriptor to every client in `C`.
 
 `n ≥ 3` because the sum of two values plus one participant's own value reveals the other's. In general, `n − 1` colluding clients always deanonymise the last one — that's inherent to *any* secure aggregation scheme, since the output is a sum. Pick `n` large enough that the aggregate is meaningfully anonymising.
 
@@ -89,7 +89,7 @@ for v in roster, v != u:
 
 ## Phase 3 — aggregation (server)
 
-The server collects `y_u` from all `n` members. If any member is missing when the round's deadline passes, **the round fails**: discard the submissions, keep the previous global weights, start a new round. There is no partial recovery — that is the accepted scope cut, and the thing dropout robustness would buy you.
+The server collects `y_u` from all `n` members; the sweep dispatches aggregation as soon as the last one arrives. If any member is still missing `SECURE_ROUND_SEAL_TIMEOUT_SECONDS` after the seal, **the round fails**: the submissions are discarded, the global weights stay put, and clients re-join a fresh round (their rate limits are cleared so they can do so at once). There is no partial recovery — that is the accepted scope cut, and the thing dropout robustness would buy you. A round whose base weights stop being the active ones fails immediately, since its deltas no longer apply.
 
 With all `n` in hand:
 
@@ -112,6 +112,8 @@ W_next     = W + mean_delta
 ```
 
 `mean_delta` is the uniformly-weighted FedAvg mean of the clients' deltas, up to quantization error. It's numerically the same thing your unmasked path already computes; only the route it took differs.
+
+The whole lifecycle is `open → sealed → aggregating → aggregated | failed`. Aggregation claims the round (`sealed → aggregating`) before doing any work, so a duplicate dispatch is a no-op, and the resulting snapshot goes through the same one-child-per-parent guard as the dense path (see [server-internals.md](server-internals.md)).
 
 ## Why it's private
 

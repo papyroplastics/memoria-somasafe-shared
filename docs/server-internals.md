@@ -15,13 +15,26 @@ distributable instead of assuming a co-located disk.
 - **Gateway (`api/`):** serves model artifacts (from the DB, keyed by the active
   `GlobalWeights` row), accepts weight-delta uploads, persists them, enqueues worker jobs,
   and exposes a result endpoint the client polls.
-- **Worker (`worker/tasks.py`):** restores uploaded weights into the model, converts it to
-  a signed int8 `.tflite`, and runs the daily federated aggregation. Each forked worker
-  child builds every available model post-fork (TensorFlow isn't fork-safe once
-  initialized, so building it in the parent would deadlock every child). Beat (the
-  scheduler that fires the aggregation/cleanup ticks) runs as its own single-replica
-  process (`make beat-run`), never embedded in a worker — running it inside a scaled-out
-  worker would fire every tick once per worker replica.
+- **Worker (`worker/`):** quantizes and signs uploads, runs the aggregation rounds and
+  sweeps expired results. Tasks go to a `light` queue (dispatcher, secure-round sweep,
+  cleanup) or a `heavy` one (quantization, aggregation), so cheap SQL never waits behind a
+  TFLite conversion. Each forked child builds a model on first use and caches it (variants
+  sharing an architecture share one graph) — post-fork, since TensorFlow isn't fork-safe
+  once initialized. Beat runs as its own single-replica process (`make beat-run`); inside
+  a scaled-out worker it would fire every tick once per replica.
+
+## Worker task pattern
+
+Every task **claims** its work (committed at once), **reads** what it needs into plain
+values, **computes** with no database session open, **writes** the result and the row's
+terminal status in one transaction, then runs **effects** that are safe to lose (clearing
+rate limits, dispatching follow-ups). A row with a lifecycle (`QuantizationJob`,
+`SecureRound`) is its own lock: every status change is a conditional `UPDATE … WHERE
+status = :from` whose row count says whether it happened (`ClaimableModel`), so a
+redelivered task finds its row already claimed and returns. An exception after the claim
+records a failure verdict; a worker killed outright can't, so the periodic sweeps fail any
+row claimed for longer than the hard time limit ("worker lost"). Delivery is at-least-once
+(late acks, one prefetched task per process).
 
 ## Storage decisions (thesis scope, no production deployment)
 
@@ -45,41 +58,48 @@ distributable instead of assuming a co-located disk.
   cooldown.
 
 **Result lifecycle.** A `done` quantization result is served on request and stamped
-`served_at`; a Celery beat sweep deletes it (and nulls the job's signature) once a served
+`served_at`. The cleanup task deletes it (and nulls the job's signature) once a served
 result is older than `SERVE_GRACE_SECONDS` (5 min) or an unclaimed one older than
-`RESULT_TTL_SECONDS` (1 h), flipping the job to `expired`. Weight submissions themselves
-are never reaped.
+`RESULT_TTL_SECONDS` (1 h), flipping the job to `expired`, in batches of
+`CLEANUP_BATCH_SIZE`. The same pass fails jobs a dead worker left `running` and expires
+`pending` jobs whose task never ran. Weight submissions themselves are never reaped.
 
 ## Federated aggregation
 
-A beat task runs one round per initialized model, on `FED_AGG_INTERVAL_SECONDS` (default
-24 h):
+Every `FED_AGG_INTERVAL_SECONDS` (default 24 h) beat fires a dispatcher that queues one
+round per `raw`/`quantize` model (see [submission-type.md](submission-type.md)), so models
+aggregate in parallel across workers; `secure` models aggregate per sealed round instead
+(see [secure-aggregation.md](secure-aggregation.md)). Each round:
 
-1. **Strategy** — chosen by the latest version's `submission_type` (see
-   [submission-type.md](submission-type.md)); a type with no strategy is skipped.
-2. **Window** — the deltas whose `base_weights_id` is the version's active snapshot, one
-   per client (latest submission wins).
-3. **Validation** — a structural check (weight count matches, buffer finite) the gateway
-   already performs before accepting a submission, so every stored row is pre-validated;
-   aggregation only re-checks rows written before that guarantee existed.
-4. **Round threshold** — fewer than `FED_MIN_SUBMISSIONS` (default 1) valid submissions
-   skips the model until next round.
-5. **Aggregation** — `trimmed_mean` drops the smallest/largest `FED_TRIM_RATIO` (default
-   0.1) fraction of each coordinate before averaging the rest; this is the round's only
-   Byzantine defense. Uniform weighting (not weighted by claimed dataset size) removes the
-   incentive to lie about how much data was trained on.
-6. **Artifact baking** — the averaged weights are restored into the cached model and both
-   serving artifacts (trainable + signed int8) are re-exported and committed in the same
-   transaction as the new `GlobalWeights` row, so a visible snapshot always has its
-   artifacts.
-7. **Rate-limit reset** — a successful round clears the model's download/submission
-   counters for every user.
+1. **Lock** — takes a per-model Redis lock (`FED_LOCK_TTL_SECONDS`); a round that finds it
+   held is skipped.
+2. **Cohort** — the newest valid delta per client among those based on the version's
+   active snapshot, capped to the newest `FED_AGG_MEMORY_BYTES // (weight_count × 4)`
+   clients (500 MB default) so memory stays bounded. Fewer than `FED_MIN_SUBMISSIONS`
+   (default 1) skips the model until next tick. Structural checks happen at the gateway
+   before a delta is stored, so `valid` is only a manual revocation switch.
+3. **Aggregation** — `trimmed_mean` drops the smallest/largest `FED_TRIM_RATIO` (default
+   0.2) of each coordinate before averaging the rest; this is the round's only Byzantine
+   defense. Uniform weighting removes the incentive to lie about dataset size.
+4. **Artifact baking** — both serving artifacts (trainable + signed int8) are exported
+   from the new weights; if that fails, nothing is written.
+5. **Commit** — the new `GlobalWeights` row and its artifacts land in one transaction, so a
+   visible snapshot always has its artifacts. The row records the snapshot it aggregated
+   from (`parent_weights_id`), and a partial unique index allows one valid child per
+   parent, so if the lock ever lapses the second round to commit fails as a duplicate. The
+   lock saves wasted work; the index guarantees correctness.
+6. **Rate-limit reset** — the model's download/submission counters are cleared for every
+   user.
+
+The round returns its outcome, cohort size and per-phase timings as structured data.
 
 If a round makes a model worse, flipping its `valid` flag to false rolls clients back to
-the previous snapshot atomically (artifacts + weights together). Schema changes are
+the previous snapshot atomically (artifacts + weights together), and since the index only
+counts valid rows the next round can aggregate from that parent again. Schema changes are
 handled by wiping the database and re-running the seed script — no migrations.
 
-A round can be queued by hand: `uv run -m scripts.integration.queue_aggregation [model]`.
+A round can be queued by hand: `uv run -m scripts.integration.queue_aggregation [model]`
+(without a model it runs the dispatcher).
 
 **Headless federated run.** `scripts/integration/fed_client.py` drives the whole stack
 over the real HTTP API: downloads the trainable artifact once, then per subject (as user

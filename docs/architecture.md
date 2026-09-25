@@ -44,6 +44,7 @@ boundary:
 - **User auth** (phone ↔ server): stateful bearer tokens over HTTP. See
   [authentication.md](authentication.md).
 
-Federated aggregation itself has basic Byzantine-robustness (submission validation,
-z-score outlier filtering) but no stronger scheme (trimmed mean, FLTrust); see each
-module's README for what's still on its roadmap.
+Federated aggregation itself has only basic Byzantine robustness (a coordinate-wise
+trimmed mean over structurally validated deltas), and none at all on the secure path, where
+the server never sees an individual update; see each module's README for what's still on
+its roadmap.
