@@ -16,8 +16,8 @@ distributable instead of assuming a co-located disk.
   `GlobalWeights` row), accepts weight-delta uploads, persists them, enqueues worker jobs,
   and exposes a result endpoint the client polls.
 - **Worker (`worker/`):** quantizes and signs uploads, runs the aggregation rounds and
-  sweeps expired results. Tasks go to a `light` queue (dispatcher, secure-round sweep,
-  cleanup) or a `heavy` one (quantization, aggregation), so cheap SQL never waits behind a
+  sweeps expired results. Tasks go to a `light` queue (dispatcher, secure-session sweep
+  and sums, cleanup) or a `heavy` one (quantization, aggregation), so cheap SQL never waits behind a
   TFLite conversion. Each forked child builds a model on first use and caches it (variants
   sharing an architecture share one graph) — post-fork, since TensorFlow isn't fork-safe
   once initialized. Beat runs as its own single-replica process (`make beat-run`); inside
@@ -29,7 +29,7 @@ Every task **claims** its work (committed at once), **reads** what it needs into
 values, **computes** with no database session open, **writes** the result and the row's
 terminal status in one transaction, then runs **effects** that are safe to lose (clearing
 rate limits, dispatching follow-ups). A row with a lifecycle (`QuantizationJob`,
-`SecureRound`) is its own lock: every status change is a conditional `UPDATE … WHERE
+`SecureSession`) is its own lock: every status change is a conditional `UPDATE … WHERE
 status = :from` whose row count says whether it happened (`ClaimableModel`), so a
 redelivered task finds its row already claimed and returns. An exception after the claim
 records a failure verdict; a worker killed outright can't, so the periodic sweeps fail any
@@ -47,10 +47,8 @@ row claimed for longer than the hard time limit ("worker lost"). Delivery is at-
   commit, a `stat` call needed on every download route). Blobs stay within what Postgres
   handles comfortably at this scale (a few MB to ~13 MB per artifact).
 - **Redis** backs the Celery broker/result cache (so a caller can await a queued task's
-  return value) and, separately, session/rate-limit state. Both default to the same
-  `REDIS_URL` instance for local single-instance setups, but the broker side can be pointed
-  at a different instance via `CELERY_BROKER_URL`/`CELERY_RESULT_BACKEND` — the two have
-  different access patterns and don't need to share an instance.
+  return value) and, separately, session/rate-limit state. Both share one instance (the
+  broker on db 1), but `BROKER_HOST`/`BROKER_PORT` can move the broker to its own.
 - **Everything served is zstd-compressed**, stored compressed and served as-is (the client
   decompresses). Signatures cover the raw bytes, so the server compresses after signing.
 - **The gateway always proxies** — it reads the blob server-side and returns it, so auth
@@ -67,31 +65,37 @@ result is older than `SERVE_GRACE_SECONDS` (5 min) or an unclaimed one older tha
 ## Federated aggregation
 
 Every `FED_AGG_INTERVAL_SECONDS` (default 24 h) beat fires a dispatcher that queues one
-round per `raw`/`quantize` model (see [submission-type.md](submission-type.md)), so models
-aggregate in parallel across workers; `secure` models aggregate per sealed round instead
-(see [secure-aggregation.md](secure-aggregation.md)). Each round:
+round per model (see [submission-type.md](submission-type.md)), so models aggregate in
+parallel across workers. A round is implicit: whatever has been contributed on the
+model's active weights. Dense models contribute one delta per client; `secure` models
+contribute one partial result (a session's mean delta) per summed session, see
+[secure-aggregation.md](secure-aggregation.md). Each round:
 
 1. **Lock** — takes a per-model Redis lock (`FED_LOCK_TTL_SECONDS`); a round that finds it
    held is skipped.
-2. **Cohort** — the newest valid delta per client among those based on the version's
-   active snapshot, capped to the newest `FED_AGG_MEMORY_BYTES // (weight_count × 4)`
-   clients (500 MB default) so memory stays bounded. Fewer than `FED_MIN_SUBMISSIONS`
-   (default 1) skips the model until next tick. Structural checks happen at the gateway
-   before a delta is stored, so `valid` is only a manual revocation switch.
+2. **Cohort** — the rows on the active snapshot: valid deltas for dense models (one per
+   client per snapshot; a resubmission overwrites the previous one), partial results for
+   `secure` ones. Capped to the newest `FED_AGG_MEMORY_BYTES // (weight_count × 4)` rows
+   (500 MB default) so memory stays bounded. Fewer than `FED_MIN_SUBMISSIONS` (default 1)
+   submissions — deltas, or members of the summed sessions — skips the model until next
+   tick, and anything contributed by then still counts. Structural checks happen at the
+   gateway before a delta is stored, so `valid` is only a manual revocation switch.
 3. **Aggregation** — `trimmed_mean` drops the smallest/largest `FED_TRIM_RATIO` (default
    0.2) of each coordinate before averaging the rest; this is the round's only Byzantine
-   defense. Uniform weighting removes the incentive to lie about dataset size.
+   defense (on `secure` models it trims whole sessions). Uniform weighting removes the incentive to lie about dataset size.
 4. **Artifact baking** — both serving artifacts (trainable + signed int8) are exported
    from the new weights; if that fails, nothing is written.
-5. **Commit** — the new `GlobalWeights` row and its artifacts land in one transaction, so a
-   visible snapshot always has its artifacts. The row records the snapshot it aggregated
+5. **Commit** — the new `GlobalWeights` row and its artifacts land in one transaction (with
+   the round's partial results deleted, for `secure` models), so a visible snapshot always
+   has its artifacts. The row records the snapshot it aggregated
    from (`parent_weights_id`), and a partial unique index allows one valid child per
    parent, so if the lock ever lapses the second round to commit fails as a duplicate. The
    lock saves wasted work; the index guarantees correctness.
 6. **Rate-limit reset** — the model's download/submission counters are cleared for every
    user.
 
-The round returns its outcome, cohort size and per-phase timings as structured data.
+The round returns its outcome, cohort and submission counts, and per-phase timings as
+structured data.
 
 If a round makes a model worse, flipping its `valid` flag to false rolls clients back to
 the previous snapshot atomically (artifacts + weights together), and since the index only
@@ -126,9 +130,9 @@ spent only after the work happens, so a rejected request never counts against qu
 | `GET /model/list`, `GET /model/versions/{key}` | authed only |
 | `GET /model/download/{trainable,quantized}/{key}` | device-owner; one per (model, artifact) per `DOWNLOAD_COOLDOWN_SECONDS` (default 300 s) — trainable and quantized cool down independently |
 | `GET /model/weights/{key}` | device-owner; same cooldown, separate counter from the artifact download |
-| `POST /model/submit/quantize\|raw/{key}/{weights_id}`, `POST /model/secure/submit/{round_id}` | device-owner; `SUBMIT_DAILY_LIMIT` (default 2) per model per rolling 24 h, shared across all three submission paths — one weight-submission budget per model regardless of which endpoint delivers it |
+| `POST /model/submit/quantize\|raw/{key}/{weights_id}`, `POST /model/secure/submit/{session_id}` | device-owner; `SUBMIT_DAILY_LIMIT` (default 2) per model per rolling 24 h, shared across all three submission paths — one weight-submission budget per model regardless of which endpoint delivers it |
 | `GET /model/quantize/result/{job_id}` | authed; only the submitting user |
-| `POST /model/secure/join/{key}` | device-owner; `404` unless the model is `secure`-typed; one join per model per `SECURE_JOIN_COOLDOWN_SECONDS` (default 300 s) |
+| `POST /model/secure/join/{key}/{weights_id}` | device-owner; `404` unless the model is `secure`-typed; one join per model per `SECURE_JOIN_COOLDOWN_SECONDS` (default 300 s), cleared for the members of a session that fails through no fault of theirs |
 | `GET /ota/download/{interface}/{version}` | device-owner; one per interface per `OTA_DOWNLOAD_COOLDOWN_SECONDS` (default 300 s) |
 
 Accounts are seeded, not self-registered: `uv run -m scripts.system.seed_db` bootstraps a

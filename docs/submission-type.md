@@ -7,18 +7,22 @@ and **which aggregation strategy** the server runs for it. There are three types
 and the design leaves room for more (sparse, differential-privacy) — each future format
 adds its own type plus its own endpoint rather than overloading an existing one.
 
+Every registered model is served under all three types: its base key (e.g. `feature-mlp`)
+is the `raw` model, and `<key>-quantize` / `<key>-secure` are separate models with their
+own weights and rounds, sharing the base key's artifacts.
+
 | Type | Upload path | What the client gets back | Aggregation |
 |------|-------------|---------------------------|-------------|
 | `raw` | `POST /model/submit/raw/{key}/{weights_id}` | nothing (`202`, silent) | dense FedAvg |
 | `quantize` | `POST /model/submit/quantize/{key}/{weights_id}` | a signed int8 `.tflite` of the uploaded model | dense FedAvg |
-| `secure` | `POST /model/secure/*` (sealed round) | nothing (`202`) | masked-sum FedAvg |
+| `secure` | `POST /model/secure/*` (sealed session) | nothing (`202`) | masked sums per session, trimmed mean across sessions |
 
 `raw` and `quantize` are byte-identical dense weight-delta vectors and share the same
 FedAvg path, so the `raw` (submit-only) path accepts both (`quantize`'s dense body is
 compatible and submit-only is the least work); the `quantize` path accepts only
 `quantize`-typed models. A model uploaded on a path it doesn't accept gets `404` (not
 `403`, so the path stays unguessable). `secure` carries an incompatible masked,
-non-float32 body and aggregates only inside a sealed round, so it lives entirely on its
+non-float32 body that is only summed inside a sealed session, so it lives entirely on its
 own endpoints — see [secure-aggregation.md](secure-aggregation.md).
 
 ## `raw` — submit-only
@@ -75,8 +79,9 @@ place instead:
 
 ## `secure` — masked aggregation
 
-The server only ever sees the **sum** of the round's updates, never an individual one, via
-a pairwise-masking protocol over a sealed cohort. This buys privacy against an
+The server only ever sees the **sum** of a session's updates, never an individual one, via
+a pairwise-masking protocol over a sealed cohort; a round trims and averages the sessions'
+means. This buys privacy against an
 honest-but-curious server at the cost of per-client validation (the MSE gate and outlier
 filter become structurally impossible). The full construction, its invariants and the
-sealed-round lifecycle are in [secure-aggregation.md](secure-aggregation.md).
+session lifecycle are in [secure-aggregation.md](secure-aggregation.md).

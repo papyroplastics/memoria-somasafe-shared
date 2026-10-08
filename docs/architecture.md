@@ -45,6 +45,7 @@ boundary:
   [authentication.md](authentication.md).
 
 Federated aggregation itself has only basic Byzantine robustness (a coordinate-wise
-trimmed mean over structurally validated deltas), and none at all on the secure path, where
-the server never sees an individual update; see each module's README for what's still on
+trimmed mean over structurally validated deltas). On the secure path, where the server
+never sees an individual update, the same trimmed mean runs over whole sessions' means
+instead, so a poisoned update can only be trimmed along with its session; see each module's README for what's still on
 its roadmap.
