@@ -14,9 +14,11 @@ distributable instead of assuming a co-located disk.
 
 - **Gateway (`api/`):** serves model artifacts (from the DB, keyed by the active
   `GlobalWeights` row), accepts weight-delta uploads, persists them, enqueues worker jobs,
-  and exposes a result endpoint the client polls.
+  and exposes a result endpoint the client polls. A request's database session is closed
+  as soon as its endpoint returns, before FastAPI serializes the response on the
+  threadpool, so no connection is held by a request waiting for a thread.
 - **Worker (`worker/`):** quantizes and signs uploads, runs the aggregation rounds and
-  sweeps expired results. Tasks go to a `light` queue (dispatcher, secure-session sweep
+  sweeps expired results and finished rounds' payloads. Tasks go to a `light` queue (dispatcher, secure-session sweep
   and sums, cleanup) or a `heavy` one (quantization, aggregation), so cheap SQL never waits behind a
   TFLite conversion. Each forked child builds a model on first use and caches it (variants
   sharing an architecture share one graph) — post-fork, since TensorFlow isn't fork-safe
@@ -60,29 +62,48 @@ row claimed for longer than the hard time limit ("worker lost"). Delivery is at-
 result is older than `SERVE_GRACE_SECONDS` (5 min) or an unclaimed one older than
 `RESULT_TTL_SECONDS` (1 h), flipping the job to `expired`, in batches of
 `CLEANUP_BATCH_SIZE`. The same pass fails jobs a dead worker left `running` and expires
-`pending` jobs whose task never ran. Weight submissions themselves are never reaped.
+`pending` jobs whose task never ran.
+
+**Submission lifecycle.** The server keeps a client's update only as long as a round can
+still use it. The cleanup pass clears every submitted vector (dense deltas, masked vectors,
+sessions' partial results) whose base weights are no longer active, unless a pending
+quantization job still needs it, and anything older than `SUBMISSION_RETENTION_SECONDS`
+(10 days) even if its round never ran. Submission and seat rows stay, without the payload,
+as the record of who took part in which round.
 
 ## Federated aggregation
 
-Every `FED_AGG_INTERVAL_SECONDS` (default 24 h) beat fires a dispatcher that queues one
-round per model (see [submission-type.md](submission-type.md)), so models aggregate in
-parallel across workers. A round is implicit: whatever has been contributed on the
-model's active weights. Dense models contribute one delta per client; `secure` models
+A round is implicit: whatever has been contributed on the model's active weights. Its
+snapshot carries a `closed` flag: once set, the gateway refuses new contributions to it with
+a 409. A round closes and is queued at once when it reaches the version's `round_limit`
+(seeded from `FED_ROUND_LIMIT`): for dense models when the submissions reach it, for
+`secure` ones when the members of summed sessions do, a soft limit that the closing
+session can overshoot by less than its own size. Every `FED_AGG_INTERVAL_SECONDS` (default 24 h) beat also
+fires a dispatcher that queues one round per model whatever it holds, so rounds that never
+fill still aggregate. Models aggregate in parallel across workers (see
+[submission-type.md](submission-type.md)). Dense models contribute one delta per client; `secure` models
 contribute one partial result (a session's mean delta) per summed session, see
 [secure-aggregation.md](secure-aggregation.md). Each round:
 
-1. **Lock** — takes a per-model Redis lock (`FED_LOCK_TTL_SECONDS`); a round that finds it
-   held is skipped.
+1. **Lock and close** — takes a per-model Redis lock (`FED_LOCK_TTL_SECONDS`); a round that
+   finds it held, or that was queued for weights no longer active, is skipped. It then sets
+   `closed` on the snapshot before reading anything. Dense submits hold a shared lock on
+   the snapshot row and session sums an exclusive one while they store their row, so any
+   contribution either commits before the close and is read, or sees the flag and is
+   refused.
 2. **Cohort** — the rows on the active snapshot: valid deltas for dense models (one per
    client per snapshot; a resubmission overwrites the previous one), partial results for
-   `secure` ones. Capped to the newest `FED_AGG_MEMORY_BYTES // (weight_count × 4)` rows
-   (500 MB default) so memory stays bounded. Fewer than `FED_MIN_SUBMISSIONS` (default 1)
-   submissions — deltas, or members of the summed sessions — skips the model until next
-   tick, and anything contributed by then still counts. Structural checks happen at the
+   `secure` ones, read from one snapshot of the database. Fewer than `FED_MIN_SUBMISSIONS` (default 1)
+   submissions — deltas, or members of the summed sessions — reopens the round and skips the
+   model until next tick, and anything contributed by then still counts. A round that fails
+   later stays closed until the next tick retries it. Structural checks happen at the
    gateway before a delta is stored, so `valid` is only a manual revocation switch.
 3. **Aggregation** — `trimmed_mean` drops the smallest/largest `FED_TRIM_RATIO` (default
    0.2) of each coordinate before averaging the rest; this is the round's only Byzantine
    defense (on `secure` models it trims whole sessions). Uniform weighting removes the incentive to lie about dataset size.
+   Since it works coordinate by coordinate, the rows are read in blocks of coordinates
+   sized to `FED_AGG_MEMORY_BYTES` (500 MB default), so memory stays bounded whatever the
+   cohort and model size.
 4. **Artifact baking** — both serving artifacts (trainable + signed int8) are exported
    from the new weights; if that fails, nothing is written.
 5. **Commit** — the new `GlobalWeights` row and its artifacts land in one transaction (with
@@ -103,7 +124,8 @@ counts valid rows the next round can aggregate from that parent again. Schema ch
 handled by wiping the database and re-running the seed script — no migrations.
 
 A round can be queued by hand: `uv run -m scripts.integration.queue_aggregation [model]`
-(without a model it runs the dispatcher).
+(without a model it runs the dispatcher). `scripts.integration.round_lifecycle` checks
+end to end that a full round closes on its own and leaves no payloads behind.
 
 **Headless federated run.** `scripts/integration/fed_client.py` drives the whole stack
 over the real HTTP API: downloads the trainable artifact once, then per subject (as user

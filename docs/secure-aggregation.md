@@ -19,7 +19,8 @@ This document describes a simple protocol for secure aggregation under tight (ar
 
 A **round** is everything contributed on one snapshot of global weights `W`, exactly as on
 the dense paths: it has no row and no state of its own, and it ends when an aggregation
-produces the next snapshot. A **session** is one masked-sum cohort inside a round: a few
+produces the next snapshot. Its size is capped by the version's `round_limit`, counted in
+members of summed sessions. A **session** is one masked-sum cohort inside a round: a few
 clients (`SECURE_SESSION_MIN_MEMBERS` to `SECURE_SESSION_MAX_MEMBERS`) whose updates are
 summed together, producing a **partial result**, the session's mean delta. Sessions on the
 same `W` run one after another as clients arrive, so a round collects as many of them as
@@ -136,19 +137,19 @@ partial_mean = (z_signed / S) / n
 
 The worker streams the members' vectors into a single accumulator, so memory stays proportional to `m` whatever `n` is. It stores `partial_mean` as the session's partial result (`SecurePartial`) and drops the masked vectors, which are useless once summed.
 
-The session lifecycle is `open → sealed → summing → summed | failed`. Summing claims the session (`sealed → summing`) before doing any work, so a duplicate dispatch is a no-op; a worker lost mid-sum sends the session back to `sealed` to be summed again.
+The session lifecycle is `open → sealed → summing → summed | failed`. Summing claims the session (`sealed → summing`) before doing any work, so a duplicate dispatch is a no-op, and the sweep skips sessions it queued in the last minute so a slow queue doesn't fill with duplicates; a worker lost mid-sum sends the session back to `sealed` to be summed again.
 
-**Dropouts.** If any member is still missing `SECURE_SESSION_SEAL_TIMEOUT_SECONDS` after the seal, the session fails. There is no partial recovery within a session, but a failed session costs little: its sum was never computed, so the masked vectors already received reveal nothing (each is still padded by the missing member's masks) and are deleted along with the session's seats. The members who did submit get their rate limits cleared and can join a fresh session on the same `W` with the same delta, without retraining; the member who dropped keeps its cooldown. A session whose base weights stop being the active ones fails too, since its deltas no longer apply.
+**Dropouts.** If any member is still missing `SECURE_SESSION_SEALED_FAIL_TIMEOUT_SECONDS` after the seal, the session fails. There is no partial recovery within a session, but a failed session costs little: its sum was never computed, so the masked vectors already received reveal nothing (each is still padded by the missing member's masks) and are deleted along with the session's seats. The members who did submit get their rate limits cleared and can join a fresh session on the same `W` with the same delta, without retraining; the member who dropped keeps its cooldown. A session whose base weights stop being the active ones fails too, since its deltas no longer apply.
 
 ## Phase 5 — round aggregation (server)
 
-The round is aggregated by the same task as the dense paths, fired for every model by beat every `FED_AGG_INTERVAL_SECONDS` (see [server-internals.md](server-internals.md)). For a `secure` model it reads the partial results of the summed sessions on the active `W`. If those sessions cover at least `FED_MIN_SUBMISSIONS` members, it combines the partials with the coordinate-wise trimmed mean (`FED_TRIM_RATIO`) and commits
+The round is aggregated by the same task as the dense paths (see [server-internals.md](server-internals.md)). The sum that brings the members of the round's summed sessions to `round_limit` closes the round in the same transaction that stores its partial, and queues it. From then on joins and submissions are refused, and a session still in flight fails when it reaches its sum instead of storing a partial: the round already has the members it needs and doesn't wait for it. Sums hold the snapshot row locked while they check the flag and store their partial, so exactly one of them closes the round and none lands after it. Beat also fires the round every `FED_AGG_INTERVAL_SECONDS` for rounds that never fill, closing it the same way before it reads. For a `secure` model it reads the partial results of the summed sessions on the active `W`. If those sessions cover at least `FED_MIN_SUBMISSIONS` members, it combines the partials with the coordinate-wise trimmed mean (`FED_TRIM_RATIO`) and commits
 
 ```
 W_next = W + trimmed_mean(partial_means)
 ```
 
-with its serving artifacts, through the same one-child-per-parent guard as the dense path; otherwise it does nothing, and the round stays live until the next tick. It never waits for sessions still in progress: once `W_next` lands, they are on stale weights, and they fail or are ignored. The gateway takes no part in this: it only ever checks that a join or submission targets the active weights.
+with its serving artifacts, through the same one-child-per-parent guard as the dense path; otherwise it reopens the round, which stays live. Sessions still in progress when `W_next` lands are on stale weights, and they fail. The gateway takes no part in this: it only checks that a join or submission targets the active weights of an open round.
 
 Each session counts once in the trimmed mean, whatever its size, so a session's weight is not proportional to its members. In exchange, a poisoned update can drag only its own session's mean (always within roughly `[−B, B)`), and trimming drops up to `⌊k · FED_TRIM_RATIO⌋` such sessions out of `k`. With the default ratio of 0.2 that needs at least 5 sessions; below that the trimmed mean is a plain mean of the partials.
 
